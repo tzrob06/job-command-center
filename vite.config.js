@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
+import { exec } from 'child_process';
 import * as cheerio from 'cheerio';
 
 function localApiPlugin() {
@@ -33,60 +34,56 @@ function localApiPlugin() {
           return;
         }
 
-        // 2. Scraper Endpoint
-        if (req.url === '/api/scrape' && req.method === 'POST') {
+        // 2. Python Bot Trigger Endpoint
+        if (req.url === '/api/run-python-bot' && req.method === 'POST') {
           let body = '';
           req.on('data', chunk => { body += chunk.toString(); });
           req.on('end', async () => {
             try {
-              const { url, cookie, config } = JSON.parse(body);
-              if (!url || !config || !config.selectors) {
-                throw new Error("Missing url or selectors in config");
-              }
-
-              const fetchOptions = {
-                headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                  'Accept-Language': 'en-US,en;q=0.9',
-                }
-              };
-              if (cookie) {
-                fetchOptions.headers['Cookie'] = cookie;
-              }
-
-              const response = await fetch(url, fetchOptions);
-              if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
-              const html = await response.text();
+              const { botType, config } = JSON.parse(body);
+              const scriptName = botType === 'easy_apply' ? 'easy_apply_bot.py' : 'external_job_collector.py';
               
-              const $ = cheerio.load(html);
-              const results = [];
-              const { row, company, role, status } = config.selectors;
+              // Setup paths for the Python project
+              const linkedInDir = path.resolve(__dirname, '../linkedin-auto-apply');
+              const venvPython = path.resolve(linkedInDir, '../venv/Scripts/python.exe');
+              const configPath = path.join(linkedInDir, 'config.json');
+              
+              if (!fs.existsSync(linkedInDir)) {
+                 throw new Error(`Python project directory not found at ${linkedInDir}`);
+              }
+              
+              // Merge UI settings into python config
+              let fullConfig = {};
+              if (fs.existsSync(configPath)) {
+                 fullConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+              }
+              fullConfig.search_parameters = config.search_parameters || fullConfig.search_parameters;
+              fullConfig.bot_settings = { ...fullConfig.bot_settings, ...config.bot_settings };
+              
+              // Write the updated config for the Python bot to consume
+              fs.writeFileSync(configPath, JSON.stringify(fullConfig, null, 2));
 
-              $(row).each((i, el) => {
-                const cName = $(el).find(company).text().trim().replace(/\n/g, ' ');
-                const rTitle = $(el).find(role).text().trim().replace(/\n/g, ' ');
-                
-                // Optional keyword filtering logic
-                let matchesKeyword = true;
-                if (config.keywords && config.keywords.length > 0) {
-                  const combined = (cName + " " + rTitle).toLowerCase();
-                  matchesKeyword = config.keywords.some(k => combined.includes(k.toLowerCase()));
-                }
-
-                if (cName && rTitle && matchesKeyword) {
-                  results.push({
-                    company: cName,
-                    role: rTitle,
-                    status: status || 'Applied',
-                    source: config.name || 'Scraped',
-                    dateApplied: new Date().toISOString().split('T')[0]
-                  });
-                }
+              // Run the python script
+              exec(`"${venvPython}" ${scriptName}`, { cwd: linkedInDir }, (error, stdout, stderr) => {
+                 if (error) {
+                    res.statusCode = 500;
+                    res.end(JSON.stringify({ error: error.message, stderr, stdout }));
+                    return;
+                 }
+                 
+                 // Fetch the generated CSV
+                 const csvFile = botType === 'easy_apply' ? 'applications_tracker.csv' : 'external_jobs.csv';
+                 const csvPath = path.join(linkedInDir, csvFile);
+                 let csvData = "";
+                 if (fs.existsSync(csvPath)) {
+                    csvData = fs.readFileSync(csvPath, 'utf8');
+                 }
+                 
+                 res.statusCode = 200;
+                 res.setHeader('Content-Type', 'application/json');
+                 res.end(JSON.stringify({ success: true, stdout, csvData }));
               });
-
-              res.statusCode = 200;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: true, count: results.length, data: results }));
+              
             } catch (e) {
               res.statusCode = 500;
               res.setHeader('Content-Type', 'application/json');

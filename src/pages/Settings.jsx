@@ -3,6 +3,7 @@ import { db, exportAllData } from '../db';
 import { PageHeader, ConfirmDialog, StatCard } from '../components/ui';
 import { useApp } from '../App';
 import { format } from 'date-fns';
+import { TrashIcon } from '@heroicons/react/24/outline';
 
 export default function Settings() {
   const { handleClearSamples, showToast, refreshKey, refresh } = useApp();
@@ -68,7 +69,7 @@ export default function Settings() {
     }
   ], null, 2);
 
-  const [scraperConfigStr, setScraperConfigStr] = useState(defaultScraperConfig);
+  const [scraperBots, setScraperBots] = useState([]);
 
   useEffect(() => {
     const loadStats = async () => {
@@ -84,18 +85,34 @@ export default function Settings() {
   useEffect(() => {
     const savedConfig = localStorage.getItem('scraper_config');
     if (savedConfig) {
-      setScraperConfigStr(savedConfig);
+      try {
+        const parsed = JSON.parse(savedConfig);
+        if (Array.isArray(parsed)) {
+          setScraperBots(parsed);
+        } else {
+          setScraperBots(JSON.parse(defaultScraperConfig));
+        }
+      } catch (e) {
+        setScraperBots(JSON.parse(defaultScraperConfig));
+      }
+    } else {
+      setScraperBots(JSON.parse(defaultScraperConfig));
     }
   }, []);
 
-  const saveScraperConfig = () => {
-    try {
-      JSON.parse(scraperConfigStr); // Validate JSON
-      localStorage.setItem('scraper_config', scraperConfigStr);
-      showToast('Scraper configuration saved successfully!', 'success');
-    } catch (e) {
-      showToast('Invalid JSON format. Please check your syntax.', 'error');
+  const saveScraperBots = () => {
+    localStorage.setItem('scraper_config', JSON.stringify(scraperBots, null, 2));
+    showToast('Scraper configuration saved successfully!', 'success');
+  };
+
+  const updateBot = (index, field, value, nestedField = null) => {
+    const newBots = [...scraperBots];
+    if (nestedField) {
+       newBots[index][field][nestedField] = value;
+    } else {
+       newBots[index][field] = value;
     }
+    setScraperBots(newBots);
   };
 
   const onConfirmClearSamples = async () => {
@@ -163,20 +180,59 @@ export default function Settings() {
       </section>
 
       <section className="space-y-4">
-        <h2 className="text-xl font-bold text-gray-900 border-b border-gray-200 pb-2">Scraper Configuration</h2>
-        <div className="card p-6 border border-gray-200">
-          <p className="text-sm text-gray-600 mb-4">
-            Configure the CSS selectors and keywords used by the local web scraper. 
-            You can add custom sites (like LinkedIn or Indeed) by providing the appropriate selectors.
-          </p>
-          <textarea 
-            className="form-input font-mono text-sm h-64 mb-4" 
-            value={scraperConfigStr} 
-            onChange={(e) => setScraperConfigStr(e.target.value)}
-            spellCheck="false"
-          />
-          <div className="flex justify-end">
-            <button onClick={saveScraperConfig} className="btn btn-primary">Save Configuration</button>
+        <div className="flex justify-between items-center border-b border-gray-200 pb-2">
+           <h2 className="text-xl font-bold text-gray-900">Scraper Bots Configuration</h2>
+           <button 
+             onClick={() => setScraperBots([...scraperBots, { id: 'new-bot-' + Date.now(), name: 'New Bot', bot_settings: {}, search_parameters: {}, selectors: {} }])} 
+             className="btn btn-outline text-sm py-1"
+           >
+             + Add Bot
+           </button>
+        </div>
+        <div className="space-y-6">
+          {scraperBots.map((bot, index) => (
+            <div key={bot.id} className="card p-6 border border-gray-200 shadow-sm relative">
+              <button 
+                onClick={() => setScraperBots(scraperBots.filter((_, i) => i !== index))}
+                className="absolute top-4 right-4 text-gray-400 hover:text-red-600"
+              >
+                <TrashIcon className="w-5 h-5" />
+              </button>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                 <div>
+                   <label className="form-label text-xs">Bot Name</label>
+                   <input className="form-input" value={bot.name || ''} onChange={e => updateBot(index, 'name', e.target.value)} placeholder="e.g. LinkedIn Intern Auto-Apply" />
+                 </div>
+                 <div>
+                   <label className="form-label text-xs">Bot Action</label>
+                   <select className="form-input" value={bot.botType || 'collector'} onChange={e => updateBot(index, 'botType', e.target.value)}>
+                     <option value="collector">Find & Collect Jobs</option>
+                     <option value="easy_apply">Auto-Apply to Jobs</option>
+                   </select>
+                 </div>
+                 <div>
+                   <label className="form-label text-xs">Search Keywords</label>
+                   <input className="form-input" value={bot.search_parameters?.keywords || ''} onChange={e => updateBot(index, 'search_parameters', e.target.value, 'keywords')} placeholder="Software Engineer Intern" />
+                 </div>
+                 <div>
+                   <label className="form-label text-xs">Location</label>
+                   <input className="form-input" value={bot.search_parameters?.location || ''} onChange={e => updateBot(index, 'search_parameters', e.target.value, 'location')} placeholder="United States" />
+                 </div>
+                 
+                 <div>
+                   <label className="form-label text-xs">Duration (Minutes)</label>
+                   <input type="number" className="form-input" value={bot.duration_minutes || ''} onChange={e => updateBot(index, 'duration_minutes', parseInt(e.target.value) || 0)} />
+                 </div>
+                 <div>
+                   <label className="form-label text-xs">Interval (Seconds)</label>
+                   <input type="number" className="form-input" value={bot.interval_seconds || ''} onChange={e => updateBot(index, 'interval_seconds', parseInt(e.target.value) || 0)} />
+                 </div>
+              </div>
+            </div>
+          ))}
+          <div className="flex justify-end pt-2">
+            <button onClick={saveScraperBots} className="btn btn-primary bg-indigo-600 hover:bg-indigo-700">Save Bot Configurations</button>
           </div>
         </div>
       </section>

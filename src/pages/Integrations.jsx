@@ -155,45 +155,62 @@ export default function Integrations() {
       // Helper function to execute one scrape cycle
       const executeCycle = async () => {
         try {
-          const response = await fetch('/api/scrape', {
+          const response = await fetch('/api/run-python-bot', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              url: siteConfig.url,
-              cookie: scrapeCookie,
+              botType: siteConfig.botType || 'collector',
               config: siteConfig
             })
           });
 
           if (!response.ok) {
-            console.error('Scrape cycle failed:', await response.text());
-            return;
+            const errBody = await response.text();
+            console.error('Bot execution failed:', errBody);
+            throw new Error('Bot execution failed: ' + errBody);
           }
 
           const data = await response.json();
-          if (data.data && data.data.length > 0) {
-             console.log(`[Bot ${siteConfig.id}] Found ${data.count} applications.`);
-             // In a real auto-apply bot this would hit another endpoint. 
-             // Here we are just tracking applications found.
+          if (data.csvData) {
+             console.log(`[Bot ${siteConfig.id}] Finished. Parsing CSV results...`);
              
-             // Optionally auto-add them if they are new
-             let added = 0;
-             for (const app of data.data) {
-                const existing = await db.applications.where('company').equalsIgnoreCase(app.company).toArray();
-                if (!existing.some(e => e.role.toLowerCase() === app.role.toLowerCase())) {
-                   await db.applications.add({
-                     ...app,
-                     isSample: 0
-                   });
-                   added++;
-                }
-             }
-             if (added > 0) {
-               showToast(`[Bot] Found and imported ${added} new applications.`, 'success');
-             }
+             Papa.parse(data.csvData, {
+               header: true,
+               skipEmptyLines: true,
+               complete: async (results) => {
+                 let added = 0;
+                 for (const row of results.data) {
+                    const companyName = row['Company'] || 'Unknown';
+                    const roleTitle = row['Job Title'] || row['Title'] || 'Unknown';
+                    
+                    const existing = await db.applications.where('company').equalsIgnoreCase(companyName).toArray();
+                    if (!existing.some(e => e.role.toLowerCase() === roleTitle.toLowerCase())) {
+                       await db.applications.add({
+                         company: companyName,
+                         role: roleTitle,
+                         status: row['Status'] || 'Found',
+                         source: siteConfig.name || 'Bot Scraper',
+                         dateApplied: new Date().toISOString().split('T')[0],
+                         jobPostingLink: row['Job Link'] || row['Direct Job Link'] || '',
+                         notes: row['Notes'] || '',
+                         isSample: 0
+                       });
+                       added++;
+                    }
+                 }
+                 if (added > 0) {
+                   showToast(`[Bot] Found and imported ${added} new applications.`, 'success');
+                 } else {
+                   showToast(`[Bot] Ran successfully but found no new applications.`, 'info');
+                 }
+               }
+             });
+          } else {
+             showToast('[Bot] Ran successfully but returned no CSV data.', 'warning');
           }
         } catch(err) {
           console.error('Cycle error', err);
+          showToast('Cycle error: ' + err.message, 'error');
         }
       };
 
