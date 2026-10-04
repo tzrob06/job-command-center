@@ -49,6 +49,17 @@ const SERVICES = [
     limitation: 'Uses a mock local extension channel to sync applied jobs.',
     alternative: 'Connect your extension token to enable continuous background sync.',
     canConnect: true
+  },
+  {
+    id: 'google',
+    name: 'Google Workspace',
+    status: 'OAuth 2.0',
+    color: 'bg-red-500',
+    data: 'Google Sheets, Gmail',
+    permissions: 'Read-only API Access',
+    limitation: 'Requires a Google Cloud Client ID (VITE_GOOGLE_CLIENT_ID).',
+    alternative: 'Connect to Google to directly import applications from Google Sheets or parse status updates from Gmail.',
+    canConnect: true
   }
 ];
 
@@ -81,6 +92,10 @@ export default function Integrations() {
   const [selectedService, setSelectedService] = useState(null);
   const [apiToken, setApiToken] = useState('');
 
+  const [googleSyncModalOpen, setGoogleSyncModalOpen] = useState(false);
+  const [googleSheetId, setGoogleSheetId] = useState('');
+  const [googleRange, setGoogleRange] = useState('Sheet1!A1:Z100');
+
   useEffect(() => {
     // Load existing apps to check duplicates, and connected integrations
     const loadData = async () => {
@@ -92,6 +107,38 @@ export default function Integrations() {
     loadData();
   }, [wizardStep]);
 
+  const handleGoogleAuth = () => {
+    if (!import.meta.env.VITE_GOOGLE_CLIENT_ID) {
+      showToast('VITE_GOOGLE_CLIENT_ID not found in .env. Please configure it.', 'error');
+      return;
+    }
+    if (!window.google) {
+      showToast('Google Identity Services script failed to load.', 'error');
+      return;
+    }
+
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+      scope: 'https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/gmail.readonly',
+      callback: async (tokenResponse) => {
+        if (tokenResponse && tokenResponse.access_token) {
+          await db.integrations.add({
+            service: 'google',
+            accountName: 'Google Workspace',
+            status: 'Connected',
+            token: tokenResponse.access_token, // Store token (ephemeral but good for current session)
+            lastSynced: new Date().toISOString(),
+            createdAt: new Date().toISOString()
+          });
+          showToast('Connected to Google Workspace!', 'success');
+          const integrations = await db.integrations.toArray();
+          setActiveConnections(integrations);
+        }
+      },
+    });
+    client.requestAccessToken();
+  };
+
   const handleConnect = async (e) => {
     e.preventDefault();
     if (!apiToken) {
@@ -102,6 +149,7 @@ export default function Integrations() {
       service: selectedService.id,
       accountName: `${selectedService.name} Account`,
       status: 'Connected',
+      token: apiToken,
       lastSynced: new Date().toISOString(),
       createdAt: new Date().toISOString()
     });
@@ -112,11 +160,71 @@ export default function Integrations() {
     setActiveConnections(integrations);
   };
 
-  const handleSync = async (id) => {
-    await db.integrations.update(id, { lastSynced: new Date().toISOString() });
+  const handleSync = async (conn) => {
+    if (conn.service === 'google') {
+      setGoogleSyncModalOpen(true);
+      return;
+    }
+    // Generic sync
+    await db.integrations.update(conn.id, { lastSynced: new Date().toISOString() });
     showToast('Sync triggered successfully.', 'success');
     const integrations = await db.integrations.toArray();
     setActiveConnections(integrations);
+  };
+
+  const fetchGoogleSheets = async (e) => {
+    e.preventDefault();
+    const conn = activeConnections.find(c => c.service === 'google');
+    if (!conn || !conn.token) {
+      showToast('No active Google token found. Try reconnecting.', 'error');
+      return;
+    }
+    
+    try {
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${googleSheetId}/values/${googleRange}`, {
+        headers: { Authorization: `Bearer ${conn.token}` }
+      });
+      if (!res.ok) throw new Error('Failed to fetch from Google Sheets');
+      const data = await res.json();
+      
+      if (!data.values || data.values.length < 2) {
+        showToast('Sheet is empty or missing headers.', 'error');
+        return;
+      }
+      
+      const headers = data.values[0];
+      const rows = data.values.slice(1).map(row => {
+        let obj = {};
+        headers.forEach((h, i) => { obj[h] = row[i] || ''; });
+        return obj;
+      });
+      
+      setParsedData({ headers, rows });
+      
+      // Auto-match
+      const initialMapping = {};
+      TARGET_FIELDS.forEach(field => {
+        const match = headers.find(h => 
+          h.toLowerCase().includes(field.key.toLowerCase()) || 
+          field.label.toLowerCase().includes(h.toLowerCase())
+        );
+        if (match) initialMapping[field.key] = match;
+      });
+      
+      setFieldMapping(initialMapping);
+      setWizardStep(2);
+      setGoogleSyncModalOpen(false);
+      showToast('Sheet data loaded! Map your columns.', 'success');
+      
+      // Update sync time
+      await db.integrations.update(conn.id, { lastSynced: new Date().toISOString() });
+      const integrations = await db.integrations.toArray();
+      setActiveConnections(integrations);
+
+    } catch (err) {
+      console.error(err);
+      showToast('Error syncing from Google Sheets: ' + err.message, 'error');
+    }
   };
 
   const handleDisconnect = async (id) => {
@@ -288,7 +396,7 @@ export default function Integrations() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <button onClick={() => handleSync(conn.id)} className="btn btn-primary btn-sm">Sync</button>
+                        <button onClick={() => handleSync(conn)} className="btn btn-primary btn-sm">Sync</button>
                         <button onClick={() => handleDisconnect(conn.id)} className="btn btn-ghost btn-sm text-red-600 hover:text-red-700 hover:bg-red-50">Disconnect</button>
                       </div>
                     </div>
@@ -532,6 +640,41 @@ export default function Integrations() {
           <div className="flex justify-end gap-2 pt-4">
             <button type="button" onClick={() => { setConnectModalOpen(false); setApiToken(''); }} className="btn btn-ghost">Cancel</button>
             <button type="submit" className="btn btn-primary">Connect Account</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={googleSyncModalOpen} onClose={() => setGoogleSyncModalOpen(false)} title="Import from Google Sheets">
+        <form onSubmit={fetchGoogleSheets} className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Enter the ID of your Google Sheet and the data range to import. The first row should contain your column headers.
+          </p>
+          <div>
+            <label className="form-label">Spreadsheet ID</label>
+            <input 
+              type="text" 
+              className="form-input" 
+              value={googleSheetId} 
+              onChange={e => setGoogleSheetId(e.target.value)} 
+              placeholder="e.g., 1BxiMVs0XRYFgwn..."
+              required
+            />
+            <p className="text-xs text-gray-500 mt-1">Found in the URL: docs.google.com/spreadsheets/d/<strong>[Spreadsheet ID]</strong>/edit</p>
+          </div>
+          <div>
+            <label className="form-label">Data Range</label>
+            <input 
+              type="text" 
+              className="form-input" 
+              value={googleRange} 
+              onChange={e => setGoogleRange(e.target.value)} 
+              placeholder="e.g., Sheet1!A1:Z100"
+              required
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-4">
+            <button type="button" onClick={() => setGoogleSyncModalOpen(false)} className="btn btn-ghost">Cancel</button>
+            <button type="submit" className="btn btn-primary bg-emerald-600 hover:bg-emerald-700">Fetch Data</button>
           </div>
         </form>
       </Modal>
