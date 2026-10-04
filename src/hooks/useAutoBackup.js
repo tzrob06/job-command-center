@@ -14,6 +14,25 @@ export default function useAutoBackup() {
         try {
           const data = await exportAllData();
           const jsonStr = JSON.stringify(data, null, 2);
+          
+          try {
+            // Attempt to save to the local file system via the Vite dev server plugin
+            const response = await fetch('/api/save-backup', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: jsonStr
+            });
+            
+            if (response.ok) {
+              console.log('Weekly auto-backup saved to project backups directory successfully.');
+              localStorage.setItem('last_auto_backup', now.toString());
+              return; // We succeeded, skip browser download
+            }
+          } catch (e) {
+            console.warn('Local save failed (possibly not running Vite dev server), falling back to browser download.', e);
+          }
+          
+          // Fallback: trigger browser download
           const blob = new Blob([jsonStr], { type: 'application/json' });
           const url = URL.createObjectURL(blob);
           
@@ -26,7 +45,6 @@ export default function useAutoBackup() {
           URL.revokeObjectURL(url);
           
           localStorage.setItem('last_auto_backup', now.toString());
-          console.log('Weekly auto-backup downloaded successfully.');
         } catch (err) {
           console.error('Failed to run auto-backup', err);
         }
