@@ -191,7 +191,7 @@ export default function Integrations() {
                          status: row['Status'] || 'Found',
                          source: siteConfig.name || 'Bot Scraper',
                          dateApplied: new Date().toISOString().split('T')[0],
-                         jobPostingLink: row['Job Link'] || row['Direct Job Link'] || '',
+                         jobPostingLink: row['Direct Apply URL'] || row['Direct Job Link'] || row['Job Link'] || '',
                          notes: row['Notes'] || '',
                          isSample: 0
                        });

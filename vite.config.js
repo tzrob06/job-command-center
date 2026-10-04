@@ -3,7 +3,6 @@ import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
-import * as cheerio from 'cheerio';
 
 function localApiPlugin() {
   return {

@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "cheerio": "^1.2.0",
     "date-fns": "^4.1.0",
     "dexie": "^4.0.10",
