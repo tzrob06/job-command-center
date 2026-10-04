@@ -18,22 +18,49 @@ export default function Settings() {
   const [showClearAllConfirm, setShowClearAllConfirm] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
+  const defaultScraperConfig = JSON.stringify({
+    "linkedin": {
+      "name": "LinkedIn Applied Jobs",
+      "url": "https://www.linkedin.com/my-items/saved-jobs/",
+      "selectors": {
+        "row": ".reusable-search__result-container",
+        "company": ".entity-result__primary-subtitle",
+        "role": ".entity-result__title-text",
+        "status": "Applied"
+      },
+      "keywords": ["developer", "engineer", "manager"]
+    }
+  }, null, 2);
+
+  const [scraperConfigStr, setScraperConfigStr] = useState(defaultScraperConfig);
+
   useEffect(() => {
     const loadStats = async () => {
       const apps = await db.applications.count();
       const contacts = await db.contacts.count();
       const interviews = await db.interviews.count();
       const dashboards = await db.dashboards.count();
-      
-      setStats({
-        applications: apps,
-        contacts,
-        interviews,
-        dashboards
-      });
+      setStats({ applications: apps, contacts, interviews, dashboards });
     };
     loadStats();
   }, [refreshKey]);
+
+  useEffect(() => {
+    const savedConfig = localStorage.getItem('scraper_config');
+    if (savedConfig) {
+      setScraperConfigStr(savedConfig);
+    }
+  }, []);
+
+  const saveScraperConfig = () => {
+    try {
+      JSON.parse(scraperConfigStr); // Validate JSON
+      localStorage.setItem('scraper_config', scraperConfigStr);
+      showToast('Scraper configuration saved successfully!', 'success');
+    } catch (e) {
+      showToast('Invalid JSON format. Please check your syntax.', 'error');
+    }
+  };
 
   const onConfirmClearSamples = async () => {
     await handleClearSamples();
@@ -96,6 +123,25 @@ export default function Settings() {
           <StatCard label="Contacts" value={stats.contacts} color="purple" />
           <StatCard label="Interviews" value={stats.interviews} color="amber" />
           <StatCard label="Dashboards" value={stats.dashboards} color="green" />
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-bold text-gray-900 border-b border-gray-200 pb-2">Scraper Configuration</h2>
+        <div className="card p-6 border border-gray-200">
+          <p className="text-sm text-gray-600 mb-4">
+            Configure the CSS selectors and keywords used by the local web scraper. 
+            You can add custom sites (like LinkedIn or Indeed) by providing the appropriate selectors.
+          </p>
+          <textarea 
+            className="form-input font-mono text-sm h-64 mb-4" 
+            value={scraperConfigStr} 
+            onChange={(e) => setScraperConfigStr(e.target.value)}
+            spellCheck="false"
+          />
+          <div className="flex justify-end">
+            <button onClick={saveScraperConfig} className="btn btn-primary">Save Configuration</button>
+          </div>
         </div>
       </section>
 

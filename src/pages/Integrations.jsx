@@ -60,6 +60,17 @@ const SERVICES = [
     limitation: 'Requires a Google Cloud Client ID (VITE_GOOGLE_CLIENT_ID).',
     alternative: 'Connect to Google to directly import applications from Google Sheets or parse status updates from Gmail.',
     canConnect: true
+  },
+  {
+    id: 'scraper',
+    name: 'Web Scraper',
+    status: 'Local Node.js Proxy',
+    color: 'bg-yellow-500',
+    data: 'Job Applications',
+    permissions: 'Session Cookies (Optional)',
+    limitation: 'Requires you to configure CSS selectors in Settings. Some sites (like LinkedIn) block unauthenticated scrapers.',
+    alternative: 'Run the local proxy scraper by providing a URL and optional session cookie.',
+    canConnect: true
   }
 ];
 
@@ -96,6 +107,12 @@ export default function Integrations() {
   const [googleSheetId, setGoogleSheetId] = useState('');
   const [googleRange, setGoogleRange] = useState('Sheet1!A1:Z100');
 
+  const [scrapeModalOpen, setScrapeModalOpen] = useState(false);
+  const [scrapeUrl, setScrapeUrl] = useState('');
+  const [scrapeCookie, setScrapeCookie] = useState('');
+  const [scrapeConfigKey, setScrapeConfigKey] = useState('linkedin');
+  const [isScraping, setIsScraping] = useState(false);
+
   useEffect(() => {
     // Load existing apps to check duplicates, and connected integrations
     const loadData = async () => {
@@ -106,6 +123,65 @@ export default function Integrations() {
     };
     loadData();
   }, [wizardStep]);
+
+  const runScraper = async (e) => {
+    e.preventDefault();
+    setIsScraping(true);
+    try {
+      const savedConfig = localStorage.getItem('scraper_config');
+      if (!savedConfig) throw new Error("No scraper configuration found. Go to Settings to configure.");
+      
+      const configObj = JSON.parse(savedConfig);
+      const siteConfig = configObj[scrapeConfigKey];
+      if (!siteConfig) throw new Error(`Configuration for key '${scrapeConfigKey}' not found.`);
+
+      const response = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: scrapeUrl || siteConfig.url,
+          cookie: scrapeCookie,
+          config: siteConfig
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Scraping failed');
+      }
+
+      const data = await response.json();
+      if (!data.data || data.data.length === 0) {
+        showToast('Scraper succeeded but found 0 applications. Check your CSS selectors.', 'warning');
+      } else {
+        showToast(`Scraped ${data.count} applications! Review them in the importer.`, 'success');
+        
+        // Push scraped data directly to preview state
+        const formattedPreview = data.data.map((app, index) => {
+          const isDuplicate = existingApps.some(existing => 
+            existing.company.toLowerCase() === app.company.toLowerCase() &&
+            existing.role.toLowerCase() === app.role.toLowerCase()
+          );
+          return {
+            _index: index,
+            data: app,
+            hasError: false,
+            errorMsg: '',
+            isDuplicate
+          };
+        });
+        
+        setPreviewData(formattedPreview);
+        setWizardStep(3); // Skip straight to confirm stage
+      }
+      setScrapeModalOpen(false);
+    } catch (err) {
+      console.error(err);
+      showToast('Scraping error: ' + err.message, 'error');
+    } finally {
+      setIsScraping(false);
+    }
+  };
 
   const handleGoogleAuth = () => {
     if (!import.meta.env.VITE_GOOGLE_CLIENT_ID) {
@@ -439,10 +515,19 @@ export default function Integrations() {
                     </div>
                     {service.canConnect && (
                       <button 
-                        onClick={() => { setSelectedService(service); setConnectModalOpen(true); }}
+                        onClick={() => {
+                          if (service.id === 'google') {
+                            handleGoogleAuth();
+                          } else if (service.id === 'scraper') {
+                            setScrapeModalOpen(true);
+                          } else {
+                            setSelectedService(service); 
+                            setConnectModalOpen(true); 
+                          }
+                        }}
                         className="btn btn-secondary w-full"
                       >
-                        Connect {service.name} Account
+                        {service.id === 'scraper' ? 'Run Scraper' : `Connect ${service.name} Account`}
                       </button>
                     )}
                   </div>
@@ -675,6 +760,52 @@ export default function Integrations() {
           <div className="flex justify-end gap-2 pt-4">
             <button type="button" onClick={() => setGoogleSyncModalOpen(false)} className="btn btn-ghost">Cancel</button>
             <button type="submit" className="btn btn-primary bg-emerald-600 hover:bg-emerald-700">Fetch Data</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={scrapeModalOpen} onClose={() => setScrapeModalOpen(false)} title="Run Web Scraper">
+        <form onSubmit={runScraper} className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Provide the target URL and optional session cookie to scrape applications.
+          </p>
+          <div>
+            <label className="form-label">Configuration Key</label>
+            <input 
+              type="text" 
+              className="form-input" 
+              value={scrapeConfigKey} 
+              onChange={e => setScrapeConfigKey(e.target.value)} 
+              placeholder="e.g., linkedin"
+              required
+            />
+            <p className="text-xs text-gray-500 mt-1">Must match a key in your Scraper Configuration (Settings page).</p>
+          </div>
+          <div>
+            <label className="form-label">Target URL (Optional)</label>
+            <input 
+              type="url" 
+              className="form-input" 
+              value={scrapeUrl} 
+              onChange={e => setScrapeUrl(e.target.value)} 
+              placeholder="Leave empty to use URL from config"
+            />
+          </div>
+          <div>
+            <label className="form-label">Session Cookie (Optional)</label>
+            <input 
+              type="text" 
+              className="form-input" 
+              value={scrapeCookie} 
+              onChange={e => setScrapeCookie(e.target.value)} 
+              placeholder="e.g., JSESSIONID=... (Required for authenticated pages)"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-4">
+            <button type="button" onClick={() => setScrapeModalOpen(false)} className="btn btn-ghost" disabled={isScraping}>Cancel</button>
+            <button type="submit" className="btn btn-primary bg-yellow-600 hover:bg-yellow-700" disabled={isScraping}>
+              {isScraping ? 'Scraping...' : 'Run Scraper'}
+            </button>
           </div>
         </form>
       </Modal>
