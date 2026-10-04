@@ -110,8 +110,9 @@ export default function Integrations() {
   const [scrapeModalOpen, setScrapeModalOpen] = useState(false);
   const [scrapeUrl, setScrapeUrl] = useState('');
   const [scrapeCookie, setScrapeCookie] = useState('');
-  const [scrapeConfigKey, setScrapeConfigKey] = useState('linkedin');
+  const [scrapeConfigKey, setScrapeConfigKey] = useState('linkedin-applied');
   const [isScraping, setIsScraping] = useState(false);
+  const isScrapingRef = React.useRef(false);
 
   useEffect(() => {
     // Load existing apps to check duplicates, and connected integrations
@@ -126,60 +127,99 @@ export default function Integrations() {
 
   const runScraper = async (e) => {
     e.preventDefault();
+    if (isScrapingRef.current) return;
     setIsScraping(true);
+    isScrapingRef.current = true;
+    
     try {
       const savedConfig = localStorage.getItem('scraper_config');
       if (!savedConfig) throw new Error("No scraper configuration found. Go to Settings to configure.");
       
-      const configObj = JSON.parse(savedConfig);
-      const siteConfig = configObj[scrapeConfigKey];
-      if (!siteConfig) throw new Error(`Configuration for key '${scrapeConfigKey}' not found.`);
-
-      const response = await fetch('/api/scrape', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: scrapeUrl || siteConfig.url,
-          cookie: scrapeCookie,
-          config: siteConfig
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Scraping failed');
-      }
-
-      const data = await response.json();
-      if (!data.data || data.data.length === 0) {
-        showToast('Scraper succeeded but found 0 applications. Check your CSS selectors.', 'warning');
+      const configArr = JSON.parse(savedConfig);
+      // Support array or legacy object format
+      let siteConfig = null;
+      if (Array.isArray(configArr)) {
+        siteConfig = configArr.find(c => c.id === scrapeConfigKey);
       } else {
-        showToast(`Scraped ${data.count} applications! Review them in the importer.`, 'success');
-        
-        // Push scraped data directly to preview state
-        const formattedPreview = data.data.map((app, index) => {
-          const isDuplicate = existingApps.some(existing => 
-            existing.company.toLowerCase() === app.company.toLowerCase() &&
-            existing.role.toLowerCase() === app.role.toLowerCase()
-          );
-          return {
-            _index: index,
-            data: app,
-            hasError: false,
-            errorMsg: '',
-            isDuplicate
-          };
-        });
-        
-        setPreviewData(formattedPreview);
-        setWizardStep(3); // Skip straight to confirm stage
+        siteConfig = configArr[scrapeConfigKey];
+      }
+      
+      if (!siteConfig) throw new Error(`Bot configuration for '${scrapeConfigKey}' not found.`);
+
+      const durationMs = (siteConfig.duration_minutes || 1) * 60 * 1000;
+      const intervalMs = (siteConfig.interval_seconds || 60) * 1000;
+      const endTime = Date.now() + durationMs;
+      
+      showToast(`Starting bot: ${siteConfig.name}. Running for ${siteConfig.duration_minutes} minutes.`, 'success');
+
+      // Helper function to execute one scrape cycle
+      const executeCycle = async () => {
+        try {
+          const response = await fetch('/api/scrape', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url: siteConfig.url,
+              cookie: scrapeCookie,
+              config: siteConfig
+            })
+          });
+
+          if (!response.ok) {
+            console.error('Scrape cycle failed:', await response.text());
+            return;
+          }
+
+          const data = await response.json();
+          if (data.data && data.data.length > 0) {
+             console.log(`[Bot ${siteConfig.id}] Found ${data.count} applications.`);
+             // In a real auto-apply bot this would hit another endpoint. 
+             // Here we are just tracking applications found.
+             
+             // Optionally auto-add them if they are new
+             let added = 0;
+             for (const app of data.data) {
+                const existing = await db.applications.where('company').equalsIgnoreCase(app.company).toArray();
+                if (!existing.some(e => e.role.toLowerCase() === app.role.toLowerCase())) {
+                   await db.applications.add({
+                     ...app,
+                     isSample: 0
+                   });
+                   added++;
+                }
+             }
+             if (added > 0) {
+               showToast(`[Bot] Found and imported ${added} new applications.`, 'success');
+             }
+          }
+        } catch(err) {
+          console.error('Cycle error', err);
+        }
+      };
+
+      // Loop execution
+      while (Date.now() < endTime && isScrapingRef.current) {
+         await executeCycle();
+         // Wait for the interval in smaller chunks so we can cancel quickly
+         for (let i = 0; i < intervalMs; i += 1000) {
+           if (!isScrapingRef.current) break;
+           await new Promise(r => setTimeout(r, 1000));
+         }
+      }
+      
+      if (isScrapingRef.current) {
+        showToast(`Bot ${siteConfig.name} finished its ${siteConfig.duration_minutes}m run.`, 'success');
+      } else {
+        showToast(`Bot ${siteConfig.name} was stopped manually.`, 'success');
       }
       setScrapeModalOpen(false);
+      
     } catch (err) {
       console.error(err);
-      showToast('Scraping error: ' + err.message, 'error');
+      showToast('Bot error: ' + err.message, 'error');
     } finally {
       setIsScraping(false);
+      isScrapingRef.current = false;
     }
   };
 
@@ -764,47 +804,57 @@ export default function Integrations() {
         </form>
       </Modal>
 
-      <Modal open={scrapeModalOpen} onClose={() => setScrapeModalOpen(false)} title="Run Web Scraper">
+      <Modal open={scrapeModalOpen} onClose={() => { setScrapeModalOpen(false); setIsScraping(false); isScrapingRef.current = false; }} title="Run Bot / Web Scraper">
         <form onSubmit={runScraper} className="space-y-4">
           <p className="text-sm text-gray-600">
-            Provide the target URL and optional session cookie to scrape applications.
+            Select a configured bot to run. It will run for the duration specified in your settings.
           </p>
           <div>
-            <label className="form-label">Configuration Key</label>
-            <input 
-              type="text" 
+            <label className="form-label">Select Bot</label>
+            <select 
               className="form-input" 
               value={scrapeConfigKey} 
-              onChange={e => setScrapeConfigKey(e.target.value)} 
-              placeholder="e.g., linkedin"
+              onChange={e => setScrapeConfigKey(e.target.value)}
               required
-            />
-            <p className="text-xs text-gray-500 mt-1">Must match a key in your Scraper Configuration (Settings page).</p>
+            >
+              <option value="" disabled>Select a bot configuration...</option>
+              {(() => {
+                try {
+                  const arr = JSON.parse(localStorage.getItem('scraper_config') || '[]');
+                  if (Array.isArray(arr)) {
+                    return arr.map(bot => <option key={bot.id} value={bot.id}>{bot.name} ({bot.duration_minutes}m)</option>);
+                  }
+                  return Object.keys(arr).map(k => <option key={k} value={k}>{arr[k].name || k}</option>);
+                } catch(e) {
+                  return <option value="linkedin-applied">LinkedIn Applied Jobs</option>;
+                }
+              })()}
+            </select>
           </div>
           <div>
-            <label className="form-label">Target URL (Optional)</label>
-            <input 
-              type="url" 
-              className="form-input" 
-              value={scrapeUrl} 
-              onChange={e => setScrapeUrl(e.target.value)} 
-              placeholder="Leave empty to use URL from config"
-            />
-          </div>
-          <div>
-            <label className="form-label">Session Cookie (Optional)</label>
+            <label className="form-label">Session Cookie (Required for authenticated bots)</label>
             <input 
               type="text" 
               className="form-input" 
               value={scrapeCookie} 
               onChange={e => setScrapeCookie(e.target.value)} 
-              placeholder="e.g., JSESSIONID=... (Required for authenticated pages)"
+              placeholder="e.g., li_at=..."
             />
           </div>
+          
+          {isScraping && (
+            <div className="bg-blue-50 border border-blue-200 p-4 rounded-md animate-pulse">
+              <p className="text-sm text-blue-800 font-semibold mb-1">Bot is running...</p>
+              <p className="text-xs text-blue-600">Executing cycles based on interval settings. Please leave this window open.</p>
+            </div>
+          )}
+
           <div className="flex justify-end gap-2 pt-4">
-            <button type="button" onClick={() => setScrapeModalOpen(false)} className="btn btn-ghost" disabled={isScraping}>Cancel</button>
-            <button type="submit" className="btn btn-primary bg-yellow-600 hover:bg-yellow-700" disabled={isScraping}>
-              {isScraping ? 'Scraping...' : 'Run Scraper'}
+            <button type="button" onClick={() => { setScrapeModalOpen(false); setIsScraping(false); isScrapingRef.current = false; }} className="btn btn-ghost" disabled={false}>
+              {isScraping ? 'Stop' : 'Cancel'}
+            </button>
+            <button type="submit" className="btn btn-primary bg-yellow-600 hover:bg-yellow-700" disabled={isScraping || !scrapeConfigKey}>
+              {isScraping ? 'Running...' : 'Start Bot'}
             </button>
           </div>
         </form>

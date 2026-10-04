@@ -18,19 +18,55 @@ export default function Settings() {
   const [showClearAllConfirm, setShowClearAllConfirm] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  const defaultScraperConfig = JSON.stringify({
-    "linkedin": {
-      "name": "LinkedIn Applied Jobs",
+  const defaultScraperConfig = JSON.stringify([
+    {
+      "id": "linkedin-applied",
+      "name": "LinkedIn Applied Jobs Sync",
       "url": "https://www.linkedin.com/my-items/saved-jobs/",
+      "duration_minutes": 5,
+      "interval_seconds": 60,
+      "bot_settings": {
+        "delay_min_seconds": 2.0,
+        "delay_max_seconds": 4.5,
+        "max_applications_per_run": 20,
+        "headless": false
+      },
+      "search_parameters": {
+        "keywords": "",
+        "location": "",
+        "date_posted": "past_month"
+      },
       "selectors": {
         "row": ".reusable-search__result-container",
         "company": ".entity-result__primary-subtitle",
         "role": ".entity-result__title-text",
         "status": "Applied"
+      }
+    },
+    {
+      "id": "linkedin-auto-apply-bot",
+      "name": "LinkedIn SWE Intern Auto-Apply",
+      "url": "https://www.linkedin.com/jobs/search/?keywords=Software%20Engineer%20Intern&location=Connecticut",
+      "duration_minutes": 60,
+      "interval_seconds": 300,
+      "bot_settings": {
+        "delay_min_seconds": 2.0,
+        "delay_max_seconds": 4.5,
+        "max_applications_per_run": 20,
+        "dry_run": true
       },
-      "keywords": ["developer", "engineer", "manager"]
+      "search_parameters": {
+        "keywords": "(Software Engineer OR AI OR Electrical Engineering OR Computer Science) Intern",
+        "location": "Connecticut, United States"
+      },
+      "selectors": {
+        "row": ".job-search-card",
+        "company": ".job-search-card__subtitle",
+        "role": ".job-search-card__title",
+        "status": "Found"
+      }
     }
-  }, null, 2);
+  ], null, 2);
 
   const [scraperConfigStr, setScraperConfigStr] = useState(defaultScraperConfig);
 
