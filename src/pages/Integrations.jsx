@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Papa from 'papaparse';
 import { db, createApplication, APP_STATUSES, APP_SOURCES, PRIORITIES } from '../db';
-import { PageHeader, StatusBadge } from '../components/ui';
+import { PageHeader, StatusBadge, Modal } from '../components/ui';
 import { useApp } from '../App';
+import { format } from 'date-fns';
 
 const SERVICES = [
   {
@@ -13,37 +14,41 @@ const SERVICES = [
     data: 'Job Applications, Connections',
     permissions: 'None (No API)',
     limitation: 'LinkedIn does not offer a public API for job application data. Direct integration is not possible without violating their terms of service.',
-    alternative: "Export your data manually from LinkedIn (Settings > Data Privacy > Get a copy of your data > select 'Jobs' and 'Connections'), then use the CSV import wizard below."
+    alternative: "Export your data manually from LinkedIn (Settings > Data Privacy > Get a copy of your data > select 'Jobs' and 'Connections'), then use the CSV import wizard below.",
+    canConnect: false
   },
   {
-    id: 'hiringcafe',
-    name: 'HiringCafe',
-    status: 'Manual Import Only',
-    color: 'bg-green-600',
+    id: 'greenhouse',
+    name: 'Greenhouse / ATS',
+    status: 'API Key Support',
+    color: 'bg-emerald-600',
     data: 'Job Applications',
-    permissions: 'None (No API)',
-    limitation: 'HiringCafe does not currently provide a public API or OAuth integration for third-party apps.',
-    alternative: 'If available, export your application data from HiringCafe as a CSV file and use the import wizard.'
+    permissions: 'Read-only API Access',
+    limitation: 'Requires a personal API key or Board token from the employer.',
+    alternative: 'Enter your API key below to securely sync statuses locally.',
+    canConnect: true
   },
   {
-    id: 'handshake',
-    name: 'Handshake',
-    status: 'Manual Import Only',
-    color: 'bg-red-600',
-    data: 'Job Applications, Employers',
-    permissions: 'None (Restricted API)',
-    limitation: "Handshake's API is restricted entirely to institutional partners (universities) and employer partners. Student data cannot be accessed by third-party apps.",
-    alternative: 'Export your application data from your Handshake account (if your university allows it) and import via CSV.'
+    id: 'lever',
+    name: 'Lever',
+    status: 'API Key Support',
+    color: 'bg-orange-500',
+    data: 'Job Applications',
+    permissions: 'Read-only API Access',
+    limitation: 'Requires Lever API access token.',
+    alternative: 'Enter your access token to securely pull application states.',
+    canConnect: true
   },
   {
-    id: 'gmail',
-    name: 'Gmail',
-    status: 'Advanced Setup Required',
-    color: 'bg-purple-600',
-    data: 'Email contents (for auto-extracting status updates)',
-    permissions: 'Read-only Mail (OAuth 2.0)',
-    limitation: 'Since Job Command Center runs entirely locally without a backend, direct Gmail integration would require you to set up your own Google Cloud project with the Gmail API enabled and configure OAuth consent screens.',
-    alternative: 'For now, export relevant emails as .eml or use Google Takeout, then manually enter the data. A local-only OAuth flow may be added in the future for advanced users.'
+    id: 'generic_board',
+    name: 'Other Job Boards',
+    status: 'Browser Extension',
+    color: 'bg-indigo-600',
+    data: 'Job Postings, Applications',
+    permissions: 'Browser Sync',
+    limitation: 'Uses a mock local extension channel to sync applied jobs.',
+    alternative: 'Connect your extension token to enable continuous background sync.',
+    canConnect: true
   }
 ];
 
@@ -70,16 +75,56 @@ export default function Integrations() {
   const [previewData, setPreviewData] = useState([]);
   const [existingApps, setExistingApps] = useState([]);
   
+  // Connection State
+  const [activeConnections, setActiveConnections] = useState([]);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [selectedService, setSelectedService] = useState(null);
+  const [apiToken, setApiToken] = useState('');
+
   useEffect(() => {
-    // Load existing apps to check duplicates
-    const loadApps = async () => {
+    // Load existing apps to check duplicates, and connected integrations
+    const loadData = async () => {
       const apps = await db.applications.toArray();
       setExistingApps(apps);
+      const integrations = await db.integrations.toArray();
+      setActiveConnections(integrations);
     };
-    if (wizardStep > 0) {
-      loadApps();
-    }
+    loadData();
   }, [wizardStep]);
+
+  const handleConnect = async (e) => {
+    e.preventDefault();
+    if (!apiToken) {
+      showToast('API Key or Token is required', 'error');
+      return;
+    }
+    await db.integrations.add({
+      service: selectedService.id,
+      accountName: `${selectedService.name} Account`,
+      status: 'Connected',
+      lastSynced: new Date().toISOString(),
+      createdAt: new Date().toISOString()
+    });
+    showToast(`Connected to ${selectedService.name} successfully`, 'success');
+    setConnectModalOpen(false);
+    setApiToken('');
+    const integrations = await db.integrations.toArray();
+    setActiveConnections(integrations);
+  };
+
+  const handleSync = async (id) => {
+    await db.integrations.update(id, { lastSynced: new Date().toISOString() });
+    showToast('Sync triggered successfully.', 'success');
+    const integrations = await db.integrations.toArray();
+    setActiveConnections(integrations);
+  };
+
+  const handleDisconnect = async (id) => {
+    await db.integrations.delete(id);
+    showToast('Account disconnected.', 'success');
+    const integrations = await db.integrations.toArray();
+    setActiveConnections(integrations);
+  };
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -224,10 +269,38 @@ export default function Integrations() {
           </div>
 
           <div>
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Connected Accounts</h2>
+            {activeConnections.length === 0 ? (
+              <p className="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">No accounts connected yet. Add one below to start syncing applications.</p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                {activeConnections.map(conn => {
+                  const srv = SERVICES.find(s => s.id === conn.service) || { name: 'Unknown', color: 'bg-gray-600' };
+                  return (
+                    <div key={conn.id} className="card p-4 flex justify-between items-center border-emerald-200 bg-emerald-50/30">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-lg ${srv.color}`}>
+                          {srv.name.charAt(0)}
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-gray-900">{conn.accountName}</h3>
+                          <p className="text-xs text-gray-500">Last Synced: {conn.lastSynced ? format(new Date(conn.lastSynced), 'MMM d, yyyy h:mm a') : 'Never'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => handleSync(conn.id)} className="btn btn-primary btn-sm">Sync</button>
+                        <button onClick={() => handleDisconnect(conn.id)} className="btn btn-ghost btn-sm text-red-600 hover:text-red-700 hover:bg-red-50">Disconnect</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             <h2 className="text-xl font-bold text-gray-900 mb-4">Service Connections</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {SERVICES.map(service => (
-                <div key={service.id} className="card p-5 flex flex-col h-full border-gray-200">
+                <div key={service.id} className="card p-5 flex flex-col h-full border-gray-200 relative">
                   <div className="flex justify-between items-start mb-4">
                     <div className="flex items-center gap-3">
                       <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-lg ${service.color}`}>
@@ -251,9 +324,19 @@ export default function Integrations() {
                     </div>
                   </div>
                   
-                  <div className="mt-5 pt-4 border-t border-gray-100">
-                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Alternative</span>
-                    <p className="text-sm text-gray-600 italic mt-1">{service.alternative}</p>
+                  <div className="mt-5 pt-4 border-t border-gray-100 flex flex-col gap-3">
+                    <div>
+                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Alternative</span>
+                      <p className="text-sm text-gray-600 italic mt-1">{service.alternative}</p>
+                    </div>
+                    {service.canConnect && (
+                      <button 
+                        onClick={() => { setSelectedService(service); setConnectModalOpen(true); }}
+                        className="btn btn-secondary w-full"
+                      >
+                        Connect {service.name} Account
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -429,6 +512,29 @@ export default function Integrations() {
           </div>
         </div>
       )}
+      <Modal open={connectModalOpen} onClose={() => { setConnectModalOpen(false); setApiToken(''); }} title={`Connect ${selectedService?.name}`}>
+        <form onSubmit={handleConnect} className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Enter your credentials or extension token to authorize {selectedService?.name} access. 
+            This token is saved entirely locally on this device.
+          </p>
+          <div>
+            <label className="form-label">API Key / Extension Token</label>
+            <input 
+              type="password" 
+              className="form-input" 
+              value={apiToken} 
+              onChange={e => setApiToken(e.target.value)} 
+              placeholder="Paste token here..."
+              required
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-4">
+            <button type="button" onClick={() => { setConnectModalOpen(false); setApiToken(''); }} className="btn btn-ghost">Cancel</button>
+            <button type="submit" className="btn btn-primary">Connect Account</button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

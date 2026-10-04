@@ -12,6 +12,8 @@ import DashboardPage from './pages/Dashboard';
 import IntegrationsPage from './pages/Integrations';
 import SettingsPage from './pages/Settings';
 
+import useAutoBackup from './hooks/useAutoBackup';
+
 // ── Global App Context ───────────────────────────────────────────────────────
 export const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
@@ -20,6 +22,9 @@ export default function App() {
   const [loading, setLoading]       = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [toast, setToast]           = useState(null);
+
+  // Trigger weekly auto-backup
+  useAutoBackup();
 
   // Refresh trigger — bump this to reload all data consumers
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
@@ -30,12 +35,12 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   }, []);
 
-  // Seed sample data on first load
+  // Clear sample data automatically and remove seeding
   useEffect(() => {
-    seedSampleData()
+    clearSampleData()
       .then(() => setLoading(false))
       .catch((err) => {
-        console.error('Failed to seed sample data:', err);
+        console.error('Failed to clear sample data:', err);
         setLoading(false);
       });
   }, []);
